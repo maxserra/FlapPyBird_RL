@@ -1,8 +1,13 @@
 from itertools import cycle
+
 import random
 import sys
+from typing import Dict, Tuple
+
 import pygame
 from pygame.locals import *
+
+from RL_agents import Flappy_QAgent
 
 FPS = 30
 SCREENWIDTH  = 288
@@ -46,17 +51,39 @@ PIPES_LIST = (
     'assets/sprites/pipe-red.png',
 )
 
-
 try:
     xrange
 except NameError:
     xrange = range
 
+FPSCLOCK = pygame.time.Clock()
 
-def main():
-    global SCREEN, FPSCLOCK
+playerHeight = pygame.image.load(PLAYERS_LIST[0][0]).get_height()
+playerWidth = pygame.image.load(PLAYERS_LIST[0][0]).get_width()
+pipesHeight = pygame.image.load(PIPES_LIST[0]).get_height()
+pipesWidth = pygame.image.load(PIPES_LIST[0]).get_width()
+
+
+def getHitmask(image):
+    """returns a hitmask using an image's alpha."""
+    mask = []
+    for x in xrange(image.get_width()):
+        mask.append([])
+        for y in xrange(image.get_height()):
+            mask[x].append(bool(image.get_at((x, y))[3]))
+    return mask
+
+
+# player and upper/lower pipe hitmasks
+pHitMask = getHitmask(pygame.image.load(PLAYERS_LIST[0][0]))
+uHitmask = getHitmask(pygame.image.load(PIPES_LIST[0]))
+lHitmask = getHitmask(pygame.transform.flip(pygame.image.load(PIPES_LIST[0]), False, True))
+
+
+def main(QAgent=None):
+    global SCREEN
     pygame.init()
-    FPSCLOCK = pygame.time.Clock()
+
     SCREEN = pygame.display.set_mode((SCREENWIDTH, SCREENHEIGHT))
     pygame.display.set_caption('Flappy Bird')
 
@@ -128,7 +155,7 @@ def main():
         )
 
         movementInfo = showWelcomeAnimation()
-        crashInfo = mainGame(movementInfo)
+        crashInfo = mainGame(movementInfo, QAgent=QAgent)
         showGameOverScreen(crashInfo)
 
 
@@ -185,13 +212,13 @@ def showWelcomeAnimation():
         FPSCLOCK.tick(FPS)
 
 
-def mainGame(movementInfo):
-    score = playerIndex = loopIter = 0
-    playerIndexGen = movementInfo['playerIndexGen']
+def mainGame(movementInfo, QAgent: Flappy_QAgent = None, gui: bool = True):
+    score = playerIndex = 0  # loopIter = 0
+    # playerIndexGen = movementInfo['playerIndexGen']
     playerx, playery = int(SCREENWIDTH * 0.2), movementInfo['playery']
 
     basex = movementInfo['basex']
-    baseShift = IMAGES['base'].get_width() - IMAGES['background'].get_width()
+    baseShift = pygame.image.load('assets/sprites/base.png').get_width() - pygame.image.load(BACKGROUNDS_LIST[0]).get_width()
 
     # get 2 new pipes to add to upperPipes lowerPipes list
     newPipe1 = getRandomPipe()
@@ -209,74 +236,90 @@ def mainGame(movementInfo):
         {'x': SCREENWIDTH + 200 + (SCREENWIDTH / 2), 'y': newPipe2[1]['y']},
     ]
 
-    dt = FPSCLOCK.tick(FPS) / 1000
-    pipeVelX = -128 * dt
+    pipeVelX = -4
 
     # player velocity, max velocity, downward acceleration, acceleration on flap
-    playerVelY    = -9     # player's velocity along Y, default same as playerFlapped
+    playerVelY = -9        # player's velocity along Y, default same as playerFlapped
     playerMaxVelY = 10     # max vel along Y, max descend speed
-    playerMinVelY = -8     # min vel along Y, max ascend speed
-    playerAccY    = 1      # players downward acceleration
-    playerRot     = 45     # player's rotation
-    playerVelRot  = 3      # angular speed
-    playerRotThr  = 20     # rotation threshold
+    playerAccY = 1         # players downward acceleration
     playerFlapAcc = -9     # players speed on flapping
     playerFlapped = False  # True when player flaps
 
+    if QAgent:
+        QAgent.update_state(player_pos={"x": playerx, "y": playery},
+                            player_vel=playerVelY,
+                            lower_pipes=lowerPipes)
+
     while True:
-        for event in pygame.event.get():
-            if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
-                pygame.quit()
-                sys.exit()
-            if event.type == KEYDOWN and (event.key == K_SPACE or event.key == K_UP):
-                if playery > -2 * IMAGES['player'][0].get_height():
+        if QAgent:
+            QAgent.choose_action(state=QAgent.curr_state)
+            if QAgent.action == "flap":
+                if playery > -2 * pygame.image.load(PLAYERS_LIST[0][0]).get_height():
                     playerVelY = playerFlapAcc
                     playerFlapped = True
-                    SOUNDS['wing'].play()
+                    if gui:
+                        SOUNDS['wing'].play()
+
+            QAgent.update_state(player_pos={"x": playerx, "y": playery},
+                                player_vel=playerVelY,
+                                lower_pipes=lowerPipes)
+        else:
+            for event in pygame.event.get():
+                if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
+                    pygame.quit()
+                    sys.exit()
+                if event.type == KEYDOWN and (event.key == K_SPACE or event.key == K_UP):
+                    if playery > -2 * IMAGES['player'][0].get_height():
+                        playerVelY = playerFlapAcc
+                        playerFlapped = True
+                        SOUNDS['wing'].play()
+
+        # print(f"player (x, y) to pipe: ({playerx - lowerPipes[0]['x']}, {playery - lowerPipes[0]['y']}), pipes x {[pipe['x'] for pipe in lowerPipes]}")
 
         # check for crash here
-        crashTest = checkCrash({'x': playerx, 'y': playery, 'index': playerIndex},
-                               upperPipes, lowerPipes)
+        crashTest = checkCrash(player={'x': playerx, 'y': playery},
+                               upperPipes=upperPipes, lowerPipes=lowerPipes)
         if crashTest[0]:
             return {
                 'y': playery,
+                'pos': [playerx, playery],
                 'groundCrash': crashTest[1],
                 'basex': basex,
                 'upperPipes': upperPipes,
                 'lowerPipes': lowerPipes,
                 'score': score,
                 'playerVelY': playerVelY,
-                'playerRot': playerRot
+                'playerRot': 0
             }
 
         # check for score
-        playerMidPos = playerx + IMAGES['player'][0].get_width() / 2
+        playerMidPos = playerx + pygame.image.load(PLAYERS_LIST[0][0]).get_width() / 2
         for pipe in upperPipes:
-            pipeMidPos = pipe['x'] + IMAGES['pipe'][0].get_width() / 2
+            pipeMidPos = pipe['x'] + pygame.image.load(PIPES_LIST[0]).get_width() / 2
             if pipeMidPos <= playerMidPos < pipeMidPos + 4:
                 score += 1
-                SOUNDS['point'].play()
+                if gui:
+                    SOUNDS['point'].play()
 
         # playerIndex basex change
-        if (loopIter + 1) % 3 == 0:
-            playerIndex = next(playerIndexGen)
-        loopIter = (loopIter + 1) % 30
+        # if (loopIter + 1) % 3 == 0:
+        #     playerIndex = next(playerIndexGen)
+        # loopIter = (loopIter + 1) % 30
         basex = -((-basex + 100) % baseShift)
 
         # rotate the player
-        if playerRot > -90:
-            playerRot -= playerVelRot
+        # if playerRot > -90:
+        #     playerRot -= playerVelRot
 
         # player's movement
         if playerVelY < playerMaxVelY and not playerFlapped:
             playerVelY += playerAccY
         if playerFlapped:
             playerFlapped = False
-
             # more rotation to cover the threshold (calculated in visible rotation)
-            playerRot = 45
+            # playerRot = 45
 
-        playerHeight = IMAGES['player'][playerIndex].get_height()
+        playerHeight = pygame.image.load(PLAYERS_LIST[0][0]).get_height()
         playery += min(playerVelY, BASEY - playery - playerHeight)
 
         # move pipes to left
@@ -285,37 +328,35 @@ def mainGame(movementInfo):
             lPipe['x'] += pipeVelX
 
         # add new pipe when first pipe is about to touch left of screen
-        if 3 > len(upperPipes) > 0 and 0 < upperPipes[0]['x'] < 5:
+        if 3 > len(upperPipes) and -50 < upperPipes[0]['x'] < 5:
             newPipe = getRandomPipe()
             upperPipes.append(newPipe[0])
             lowerPipes.append(newPipe[1])
 
         # remove first pipe if its out of the screen
-        if len(upperPipes) > 0 and upperPipes[0]['x'] < -IMAGES['pipe'][0].get_width():
+        if len(upperPipes) > 0 and upperPipes[0]['x'] < -pygame.image.load(PIPES_LIST[0]).get_width():
             upperPipes.pop(0)
             lowerPipes.pop(0)
 
+        # add new
+
         # draw sprites
-        SCREEN.blit(IMAGES['background'], (0, 0))
+        if gui:
+            SCREEN.blit(IMAGES['background'], (0, 0))
 
-        for uPipe, lPipe in zip(upperPipes, lowerPipes):
-            SCREEN.blit(IMAGES['pipe'][0], (uPipe['x'], uPipe['y']))
-            SCREEN.blit(IMAGES['pipe'][1], (lPipe['x'], lPipe['y']))
+            for uPipe, lPipe in zip(upperPipes, lowerPipes):
+                SCREEN.blit(IMAGES['pipe'][0], (uPipe['x'], uPipe['y']))
+                SCREEN.blit(IMAGES['pipe'][1], (lPipe['x'], lPipe['y']))
 
-        SCREEN.blit(IMAGES['base'], (basex, BASEY))
-        # print score so player overlaps the score
-        showScore(score)
+            SCREEN.blit(IMAGES['base'], (basex, BASEY))
+            # print score so player overlaps the score
+            showScore(score)
 
-        # Player rotation has a threshold
-        visibleRot = playerRotThr
-        if playerRot <= playerRotThr:
-            visibleRot = playerRot
-        
-        playerSurface = pygame.transform.rotate(IMAGES['player'][playerIndex], visibleRot)
-        SCREEN.blit(playerSurface, (playerx, playery))
+            playerSurface = IMAGES['player'][playerIndex]
+            SCREEN.blit(playerSurface, (playerx, playery))
 
-        pygame.display.update()
-        FPSCLOCK.tick(FPS)
+            pygame.display.update()
+            FPSCLOCK.tick(FPS)
 
 
 def showGameOverScreen(crashInfo):
@@ -394,11 +435,11 @@ def getRandomPipe():
     # y of gap between upper and lower pipe
     gapY = random.randrange(0, int(BASEY * 0.6 - PIPEGAPSIZE))
     gapY += int(BASEY * 0.2)
-    pipeHeight = IMAGES['pipe'][0].get_height()
+    # pipeHeight = pygame.image.load(PIPES_LIST[0]).get_height()  # pipeHeight = IMAGES['pipe'][0].get_height()
     pipeX = SCREENWIDTH + 10
 
     return [
-        {'x': pipeX, 'y': gapY - pipeHeight},   # upper pipe
+        {'x': pipeX, 'y': gapY - pipesHeight},   # upper pipe
         {'x': pipeX, 'y': gapY + PIPEGAPSIZE},  # lower pipe
     ]
 
@@ -420,9 +461,8 @@ def showScore(score):
 
 def checkCrash(player, upperPipes, lowerPipes):
     """returns True if player collides with base or pipes."""
-    pi = player['index']
-    player['w'] = IMAGES['player'][0].get_width()
-    player['h'] = IMAGES['player'][0].get_height()
+    player['w'] = playerWidth
+    player['h'] = playerHeight
 
     # if player crashes into ground
     if player['y'] + player['h'] >= BASEY - 1:
@@ -431,18 +471,13 @@ def checkCrash(player, upperPipes, lowerPipes):
 
         playerRect = pygame.Rect(player['x'], player['y'],
                                  player['w'], player['h'])
-        pipeW = IMAGES['pipe'][0].get_width()
-        pipeH = IMAGES['pipe'][0].get_height()
+        pipeW = pipesWidth
+        pipeH = pipesHeight
 
         for uPipe, lPipe in zip(upperPipes, lowerPipes):
             # upper and lower pipe rects
             uPipeRect = pygame.Rect(uPipe['x'], uPipe['y'], pipeW, pipeH)
             lPipeRect = pygame.Rect(lPipe['x'], lPipe['y'], pipeW, pipeH)
-
-            # player and upper/lower pipe hitmasks
-            pHitMask = HITMASKS['player'][pi]
-            uHitmask = HITMASKS['pipe'][0]
-            lHitmask = HITMASKS['pipe'][1]
 
             # if bird collided with upipe or lpipe
             uCollide = pixelCollision(playerRect, uPipeRect, pHitMask, uHitmask)
@@ -471,14 +506,139 @@ def pixelCollision(rect1, rect2, hitmask1, hitmask2):
     return False
 
 
-def getHitmask(image):
-    """returns a hitmask using an image's alpha."""
-    mask = []
-    for x in xrange(image.get_width()):
-        mask.append([])
-        for y in xrange(image.get_height()):
-            mask[x].append(bool(image.get_at((x, y))[3]))
-    return mask
+class Flappy_Environment:
+    """Environment abstraction of the game. No gui not visuals, just the basics to train an agent.
+
+    The state is composed of a dict with all relevant information:
+    - playerPos : dict with {"x", "y"} position of the player
+    - playerVelY : int with the y velocity of the player
+    - upperPipes : list of dicts with {"x", "y"} position of the pipes
+    - lowerPipes : list of dicts with {"x", "y"} position of the pipes
+    - crashInfo : bool array with [crash, groundCrash]
+    - score
+
+    The agent should process this state information to optimize the state space.
+    """
+
+    def __init__(self, step_reward, score_reward, die_reward) -> None:
+
+        self.step_reward = step_reward
+        self.score_reward = step_reward + score_reward
+        self.die_reward = die_reward
+
+        print(f"Flappy_Environment initated with size ({SCREENWIDTH}x{SCREENHEIGHT}) and gap size {PIPEGAPSIZE}\n" +
+              f"Player has size ({playerWidth}x{playerHeight}) and the pipes are {pipesWidth} wide.")
+
+        self.action_space = ["flap", ""]
+
+        return
+
+    def _return_state(self):
+        return {
+            "playerPos": {"x": self.playerx, "y": self.playery},
+            "playerVelY": self.playerVelY,
+            "upperPipes": self.upperPipes,
+            "lowerPipes": self.lowerPipes,
+            "crashInfo": self.crashTest,
+            "score": self.score
+        }
+
+    def set_up(self) -> Dict:
+        """Set up the environment with default values
+        """
+        self.score = self.playerIndex = 0
+        self.crashTest = [False, False]
+        self.playerx, self.playery = int(SCREENWIDTH * 0.2), 308
+
+        # get 2 new pipes to add to upperPipes lowerPipes list
+        newPipe1 = getRandomPipe()
+        newPipe2 = getRandomPipe()
+
+        # list of upper pipes
+        self.upperPipes = [
+            {'x': SCREENWIDTH + 200, 'y': newPipe1[0]['y']},
+            {'x': SCREENWIDTH + 200 + (SCREENWIDTH / 2), 'y': newPipe2[0]['y']},
+        ]
+
+        # list of lower pipes
+        self.lowerPipes = [
+            {'x': SCREENWIDTH + 200, 'y': newPipe1[1]['y']},
+            {'x': SCREENWIDTH + 200 + (SCREENWIDTH / 2), 'y': newPipe2[1]['y']},
+        ]
+
+        self.pipeVelX = -4  # NOTE: adjust
+
+        # player velocity, max velocity, downward acceleration, acceleration on flap
+        self.playerVelY = -9        # player's velocity along Y, default same as playerFlapped
+        self.playerMaxVelY = 10     # max vel along Y, max descend speed
+        self.playerAccY = 1         # players downward acceleration
+        self.playerFlapAcc = -9     # players speed on flapping
+        self.playerFlapped = False  # True when player flaps
+
+        return self._return_state()
+
+    def take_action(self, action) -> Tuple[int, Dict]:
+        """Take an action and return the reward and new state of the environment
+
+        Args:
+            action (_type_): action to take
+
+        Returns:
+            Tuple[int, Dict]: reward and new state. See class docstring for definiton of state.
+        """
+
+        if action not in self.action_space:
+            print(f"ERROR: Passed action ({action}) not in action space {self.action_space}. Please ensure action is valid.")
+            exit()
+
+        if action == "flap":
+            if self.playery > -2 * playerHeight:
+                self.playerVelY = self.playerFlapAcc
+                self.playerFlapped = True
+
+        # check for crash here
+        self.crashTest = checkCrash(player={'x': self.playerx, 'y': self.playery},
+                                    upperPipes=self.upperPipes, lowerPipes=self.lowerPipes)
+        if self.crashTest[0]:
+            return self.die_reward, self._return_state()
+
+        # check for score
+        scored_point = False
+        playerMidPos = self.playerx + playerWidth / 2
+        for pipe in self.upperPipes:
+            pipeMidPos = pipe['x'] + pipesWidth / 2
+            if pipeMidPos <= playerMidPos < pipeMidPos + 4:
+                self.score += 1
+                scored_point = True
+
+        # player's movement
+        if self.playerVelY < self.playerMaxVelY and not self.playerFlapped:
+            self.playerVelY += self.playerAccY
+        if self.playerFlapped:
+            self.playerFlapped = False
+
+        self.playery += min(self.playerVelY, BASEY - self.playery - playerHeight)
+
+        # move pipes to left
+        for uPipe, lPipe in zip(self.upperPipes, self.lowerPipes):
+            uPipe['x'] += self.pipeVelX
+            lPipe['x'] += self.pipeVelX
+
+        # add new pipe when first pipe is about to touch left of screen
+        if 3 > len(self.upperPipes) and -50 < self.upperPipes[0]['x'] < 5:
+            newPipe = getRandomPipe()
+            self.upperPipes.append(newPipe[0])
+            self.lowerPipes.append(newPipe[1])
+
+        # remove first pipe if its out of the screen
+        if len(self.upperPipes) > 0 and self.upperPipes[0]['x'] < -pipesWidth:
+            self.upperPipes.pop(0)
+            self.lowerPipes.pop(0)
+
+        if scored_point:
+            return self.score_reward, self._return_state()
+        else:
+            return self.step_reward, self._return_state()
 
 
 if __name__ == '__main__':
