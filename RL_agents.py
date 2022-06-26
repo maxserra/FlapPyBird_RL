@@ -1,4 +1,8 @@
+from typing import Tuple, List
 import numpy as np
+
+import torch
+from torch import nn
 
 
 class Flappy_QAgent:
@@ -121,3 +125,75 @@ class Flappy_QAgent:
     def _get_Q_optimal_action(self, state):
         # print(f"state {state}")
         return np.max(self._Q_table[state])
+
+
+class FlappyNN(nn.Module):
+
+    n_in, n_h, n_out = 6, 12, 2
+
+    def __init__(self):
+        super(FlappyNN, self).__init__()
+        self.flatten = nn.Flatten()
+        self.linear_relu_stack = nn.Sequential(
+            nn.Linear(self.n_in, self.n_h),
+            nn.ReLU(),
+            nn.Linear(self.n_h, self.n_out),
+            nn.Softmax()
+        )
+
+    def forward(self, x: torch.Tensor):
+        x = self.flatten(x)
+        logits = self.linear_relu_stack(x)
+        return logits
+
+    def get_weight_and_bias(self, index: int) -> Tuple[torch.Tensor]:
+        if index in [0, 2]:
+            return (self.linear_relu_stack[index].weight,
+                    self.linear_relu_stack[index].bias)
+
+    def set_weight_and_bias(self, index: int, weight: torch.Tensor, bias: torch.Tensor):
+        if index in [0, 2]:
+            self.linear_relu_stack[index].weight = torch.nn.Parameter(weight)
+            self.linear_relu_stack[index].bias = torch.nn.Parameter(bias)
+
+
+class FlappyNNAgent:
+
+    def __init__(self) -> None:
+
+        # Dynamic variables
+        self.rewards = 0
+        self.epsisode_age = 0
+
+        self.action = ""
+        self.curr_state = ""
+
+        self._actions_list = ["", "flap"]
+        self.neural_network = FlappyNN()
+
+    def choose_action(self, state) -> str:
+
+        nn_output = self.neural_network.forward(torch.tensor([[
+            state["playerPos"]["y"],
+            state["playerVelY"],
+            state["lowerPipes"][0]["x"],
+            state["lowerPipes"][0]["y"],
+            state["lowerPipes"][1]["x"],
+            state["lowerPipes"][1]["y"]
+        ]]))
+
+        self.action = self._actions_list[torch.argmax(nn_output)]
+        return self.action
+
+    def crossover_and_mutate(self, agent_a, agent_b, mutation_rate: float = 0.05):
+
+        weight_a_0, bias_a_0 = agent_a.neural_network.get_weight_and_bias(0)
+        weight_b_0, bias_b_0 = agent_b.neural_network.get_weight_and_bias(0)
+
+        weight_a_2, bias_a_2 = agent_a.neural_network.get_weight_and_bias(2)
+        weight_b_2, bias_b_2 = agent_b.neural_network.get_weight_and_bias(2)
+
+        self.neural_network.set_weight_and_bias(0, weight=(weight_a_0 + weight_b_0) / 2 + mutation_rate * torch.rand(weight_a_0.size()),
+                                                bias=(bias_a_0 + bias_b_0) / 2 + mutation_rate * torch.rand(bias_a_0.size()))
+        self.neural_network.set_weight_and_bias(2, weight=(weight_a_2 + weight_b_2) / 2 + mutation_rate * torch.rand(weight_a_2.size()),
+                                                bias=(bias_a_2 + bias_b_2) / 2 + mutation_rate * torch.rand(bias_a_2.size()))
