@@ -101,3 +101,4 @@ if __name__ == '__main__':
 
     # train(n_episodes=30000)
     play(autoplay=True, autoplay_best=True)
+    
